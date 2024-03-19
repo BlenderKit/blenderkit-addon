@@ -18,39 +18,64 @@ logger = getLogger(f"daemon.{__name__}")
 BLENDERKIT_EXPORT_DATA_FILE = "data.json"
 
 
-async def do_upload(request: web.Request, task: daemon_tasks.Task):
-    task.change_progress(1, "posting metadata")
-    error, metadata_response = await upload_metadata(
-        request.app["SESSION_API_REQUESTS"], task
-    )
-    if error != "":
-        task.error(f"Metadata upload failed: {error}")
-        return
+async def do_asset_upload(request: web.Request, task: daemon_tasks.Task):
+    """Upload asset to server."""
+    # METADATA UPLOAD or DOWNLOAD
+    if "METADATA" in task.data["upload_set"]:
+        task.change_progress(1, "posting metadata")
+        error, metadata_response = await upload_metadata(
+            request.app["SESSION_API_REQUESTS"], task
+        )
+        if error != "":
+            task.error(f"Metadata upload failed: {error}")
+            return
+    else:
+        task.change_progress(1, "getting metadata")
+        error, metadata_response = await get_metadata(
+            request.app["SESSION_API_REQUESTS"], task
+        )
+        if error != "":
+            task.error(f"Metadata download failed: {error}")
+            return
 
-    data_asset_data = {
-        "asset_data": metadata_response,
-    }
-    task.data.update(data_asset_data)
-
+    task.data["asset_data"] = metadata_response
     metadata_upload_task = daemon_tasks.Task(
         task.data, task.app_id, "asset_metadata_upload"
     )
     metadata_upload_task.finished("Metadata successfully uploaded")
     daemon_globals.tasks.append(metadata_upload_task)
 
+    # FILE PACKING
     task.change_progress(5, "packing files")
     error, files = await pack_blend_file(task, metadata_response)
     if error != "":
         return task.error(error)
 
+    # ASSET FILES UPLOAD
     task.change_progress(20, "uploading files")
-    error = await upload_asset_data(
-        request.app["SESSION_UPLOADS"], task, files, metadata_response
-    )
+    error = await upload_asset_data(request.app["SESSION_UPLOADS"], task, files)
     if error != "":
         task.error(f"Asset upload failed: {error}")
         return
 
+    # SET UPLOAD STATUS
+    task.change_progress(98, "setting asset status")
+    error = await ensure_verificationStatus(
+        request.app["SESSION_API_REQUESTS"], task, metadata_response
+    )
+    if error != "":
+        task.error(f"Asset status setting failed: {error}")
+        return
+
+    # FINALIZE UPLOAD
+    if "THUMBNAIL" in task.data["upload_set"] or "MAINFILE" in task.data["upload_set"]:
+        task.change_progress(99, "finalizing upload")
+        error = await finalize_upload_request(request.app["SESSION_API_REQUESTS"], task)
+        if error != "":
+            task.error(f"Upload finalization failed: {error}")
+            return
+
+    logger.info("Upload task finished")
     task.finished("Asset successfully uploaded.")
 
 
@@ -74,7 +99,7 @@ async def upload_metadata(session: ClientSession, task: daemon_tasks.Task):
                 resp_status = resp.status
                 resp_text = await resp.text()
                 resp.raise_for_status()
-                logger.info(f"Got response ({resp.status}) for {url}")
+                logger.info(f"POST metadata successful ({resp.status}) for {url}")
                 resp_json = await resp.json()
                 return "", resp_json
         except Exception as e:
@@ -85,7 +110,9 @@ async def upload_metadata(session: ClientSession, task: daemon_tasks.Task):
             return msg, None
 
     url = f'{url}{export_data["id"]}/'
-    if "MAINFILE" in upload_set:
+    if (
+        "MAINFILE" in upload_set
+    ):  # quite hidden place to change the status, should be in do_asset_upload explicitly
         json_metadata["verificationStatus"] = "uploading"
     try:
         resp_text, resp_status = None, -1
@@ -93,12 +120,34 @@ async def upload_metadata(session: ClientSession, task: daemon_tasks.Task):
             resp_status = response.status
             resp_text = await response.text()
             response.raise_for_status()
-            logger.info(f"Got response ({response.status}) for {url}")
+            logger.info(f"PATCH metadata succesfful ({response.status}) for {url}")
             resp_json = await response.json()
             return "", resp_json
     except Exception as e:
         msg, detail = daemon_utils.extract_error_message(
             e, resp_text, resp_status, "Metadata upload"
+        )
+        logger.error(detail)
+        return msg, None
+
+
+async def get_metadata(session: ClientSession, task: daemon_tasks.Task):
+    """Get metadata from server."""
+    asset_id = task.data["export_data"]["id"]
+    headers = daemon_utils.get_headers(task.data["upload_data"]["token"])
+    url = f"{daemon_globals.SERVER}/api/v1/assets/{asset_id}/"
+    try:
+        resp_text, resp_status = None, -1
+        async with session.get(url, headers=headers) as resp:
+            resp_status = resp.status
+            resp_text = await resp.text()
+            resp.raise_for_status()
+            logger.info(f"GET metadata successful ({resp.status}) for {url}")
+            resp_json = await resp.json()
+            return "", resp_json
+    except Exception as e:
+        msg, detail = daemon_utils.extract_error_message(
+            e, resp_text, resp_status, "Get metadata"
         )
         logger.error(detail)
         return msg, None
@@ -191,7 +240,6 @@ async def upload_asset_data(
     session: ClientSession,
     task: daemon_tasks.Task,
     files: list,
-    metadata_response: dict,
 ) -> str:
     """Upload .blend file and/or thumbnail to the server."""
     for file in files:
@@ -203,41 +251,7 @@ async def upload_asset_data(
         if not ok:
             return error
 
-    # Check the status if only thumbnail or metadata gets reuploaded.
-    # the logic is that on hold assets might be switched to uploaded state for validators,
-    # if the asset was put on hold because of thumbnail only.
-    set_uploaded_status = False
-    if "MAINFILE" not in task.data["upload_set"]:
-        if metadata_response.get("verificationStatus") in (
-            "on_hold",
-            "deleted",
-            "rejected",
-        ):
-            set_uploaded_status = True
-
-    if "MAINFILE" in task.data["upload_set"]:
-        set_uploaded_status = True
-
-    if not set_uploaded_status:
-        return ""
-
-    # mark on server as uploaded
-    confirm_data = {"verificationStatus": "uploaded"}
-    headers = daemon_utils.get_headers(task.data["upload_data"]["token"])
-    url = f"{daemon_globals.SERVER}/api/v1/assets/{task.data['upload_data']['id']}/"
-    try:
-        resp_text, resp_status = None, -1
-        async with session.patch(url, json=confirm_data, headers=headers) as resp:
-            resp_status = resp.status
-            resp_text = await resp.text()
-            resp.raise_for_status()
-            return ""
-    except Exception as e:
-        msg, detail = daemon_utils.extract_error_message(
-            e, resp_text, resp_status, "Patch assset failed"
-        )
-        logger.error(detail)
-        return msg
+    return ""
 
 
 async def get_S3_upload_JSON(
@@ -309,3 +323,69 @@ async def upload_file_to_S3(
     task.change_progress(task.progress + 15)
     logger.info("File upload confirmed with BlenderKit server")
     return True, ""
+
+
+async def ensure_verificationStatus(
+    session: ClientSession, task: daemon_tasks.Task, metadata_response: dict
+) -> str:
+    """Ensure asset verificationStatus is set to uploaded if needed. Logic is:
+    - if MAINFILE is uploaded, set status to uploaded
+    - if THUMBNAIL or METADATA is uploaded and the asset is on_hold, deleted or rejected, set status to uploaded
+    - otherwise do not set the status to uploaded.
+    """
+    uploaded_status_required = False
+    if "MAINFILE" in task.data["upload_set"]:
+        uploaded_status_required = True
+    if metadata_response.get("verificationStatus") in (
+        "on_hold",
+        "deleted",
+        "rejected",
+    ):
+        uploaded_status_required = True
+
+    if uploaded_status_required is False:
+        return ""
+
+    # Set status to uploaded on server
+    confirm_data = {"verificationStatus": "uploaded"}
+    headers = daemon_utils.get_headers(task.data["upload_data"]["token"])
+    url = f"{daemon_globals.SERVER}/api/v1/assets/{task.data['upload_data']['id']}/"
+    try:
+        resp_text, resp_status = None, -1
+        async with session.patch(url, json=confirm_data, headers=headers) as resp:
+            resp_status = resp.status
+            resp_text = await resp.text()
+            resp.raise_for_status()
+            logger.info(f"Asset verificationStatus was set to uploaded")
+            return ""
+    except Exception as e:
+        msg, detail = daemon_utils.extract_error_message(
+            e, resp_text, resp_status, "Patch assset failed"
+        )
+        logger.error(detail)
+        return msg
+
+
+async def finalize_upload_request(
+    session: ClientSession, task: daemon_tasks.Task
+) -> str:
+    """Finalize upload by making POST request to server, called after the upload is successfully finished.
+    This triggers the server to start processing the asset.
+    """
+    asset_base_id = task.data["upload_data"]["assetBaseId"]
+    headers = daemon_utils.get_headers(task.data["upload_data"]["token"])
+    url = f"{daemon_globals.SERVER}/api/v1/assets/{asset_base_id}/finalize/"
+    try:
+        resp_text, resp_status = None, -1
+        async with session.post(url, headers=headers) as resp:
+            resp_status = resp.status
+            resp_text = await resp.text()
+            resp.raise_for_status()
+            logger.info(f"Upload finalization successful")
+            return ""
+    except Exception as e:
+        msg, detail = daemon_utils.extract_error_message(
+            e, resp_text, resp_status, "Finalize upload"
+        )
+        logger.error(detail)
+        return msg

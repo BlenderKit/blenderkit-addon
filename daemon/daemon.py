@@ -106,7 +106,9 @@ async def upload_asset(request: web.Request):
         message="Asset upload has started",
     )
     daemon_globals.tasks.append(task)
-    task.async_task = asyncio.ensure_future(daemon_uploads.do_upload(request, task))
+    task.async_task = asyncio.ensure_future(
+        daemon_uploads.do_asset_upload(request, task)
+    )
     task.async_task.set_name(f"{task.task_type}-{task.task_id}")
     task.async_task.add_done_callback(daemon_tasks.handle_async_errors)
 

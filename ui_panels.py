@@ -106,7 +106,7 @@ def draw_upload_common(layout, props, asset_type, context):
 
     if props.asset_base_id != "":
         op = layout.operator(
-            "wm.blenderkit_url", text="Edit Details", icon="GREASEPENCIL"
+            "wm.blenderkit_url", text="Edit Metadata Online", icon="GREASEPENCIL"
         )
         op.url = f"{paths.BLENDERKIT_USER_ASSETS_URL}/{props.asset_base_id}/?edit#"
 
