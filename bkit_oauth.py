@@ -153,6 +153,7 @@ def write_tokens(auth_token, refresh_token, oauth_response):
     preferences.login_attempt = False
     preferences.api_key_refresh = refresh_token
     preferences.api_key = auth_token  # triggers api_key update function
+    #
 
 
 def ensure_token_refresh() -> bool:
