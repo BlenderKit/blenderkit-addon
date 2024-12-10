@@ -3,9 +3,24 @@
 # The override library can be placed in multiple addons, and the override should happen only once.
 # The override is done by replacing the original method with the new one, and backing up the original method.
 # The original method is then called from the new method, with the same arguments, but with the new code added.
-"""
-# original code looks like this in Blender 4.2:
-def extension_draw_item(
+
+
+import json
+import os
+import bpy
+import bl_pkg.bl_extension_ui as exui
+from . import icons
+from bl_ui.space_userpref import (
+    USERPREF_PT_addons,
+    USERPREF_PT_extensions,
+    USERPREF_MT_extensions_active_repo,
+)
+from bpy.props import EnumProperty
+
+EXTENSIONS_API_URL = "https://www.blenderkit.com/api/v1/extensions/"
+
+
+def extension_draw_item_blenderkit(
     layout,
     *,
     pkg_id,  # `str`
@@ -21,6 +36,10 @@ def extension_draw_item(
     operation_in_progress,  # `bool`
     extensions_warnings,  # `dict[str, list[str]]`
 ):
+    ### BlenderKit cache code
+    bk_ext_cache = bpy.context.window_manager["blenderkit_extensions_repo_cache"]
+    bk_cache_pkg = bk_ext_cache.get(pkg_id[:32], None)
+    ### end of BlenderKit cache code
     item = item_local or item_remote
     is_installed = item_local is not None
     has_remote = repo_item.remote_url != ""
@@ -31,7 +50,9 @@ def extension_draw_item(
         pkg_block = None
 
     if is_enabled:
-        item_warnings = extensions_warnings.get(pkg_repo_module_prefix(repo_item) + pkg_id, [])
+        item_warnings = extensions_warnings.get(
+            pkg_repo_module_prefix(repo_item) + pkg_id, []
+        )
     else:
         item_warnings = []
 
@@ -40,18 +61,32 @@ def extension_draw_item(
     row = colsub.row(align=True)
 
     if show:
-        props = row.operator("extensions.package_show_clear", text="", icon='DOWNARROW_HLT', emboss=False)
+        props = row.operator(
+            "extensions.package_show_clear", text="", icon="DOWNARROW_HLT", emboss=False
+        )
     else:
-        props = row.operator("extensions.package_show_set", text="", icon='RIGHTARROW', emboss=False)
+        props = row.operator(
+            "extensions.package_show_set", text="", icon="RIGHTARROW", emboss=False
+        )
     props.pkg_id = pkg_id
     props.repo_index = repo_index
     del props
 
     if mark is not None:
         if mark:
-            props = row.operator("extensions.package_mark_clear", text="", icon='RADIOBUT_ON', emboss=False)
+            props = row.operator(
+                "extensions.package_mark_clear",
+                text="",
+                icon="RADIOBUT_ON",
+                emboss=False,
+            )
         else:
-            props = row.operator("extensions.package_mark_set", text="", icon='RADIOBUT_OFF', emboss=False)
+            props = row.operator(
+                "extensions.package_mark_set",
+                text="",
+                icon="RADIOBUT_OFF",
+                emboss=False,
+            )
         props.pkg_id = pkg_id
         props.repo_index = repo_index
         del props
@@ -62,7 +97,7 @@ def extension_draw_item(
     # is enabled or not, which is useful to show - when they may be considering removing/updating
     # extensions based on them being used or not.
     if pkg_block or item_warnings:
-        sub.label(text=item.name, icon='ERROR', translate=False)
+        sub.label(text=item.name, icon="ERROR", translate=False)
     else:
         sub.label(text=item.name, translate=False)
 
@@ -73,9 +108,9 @@ def extension_draw_item(
     row_right_toplevel = row.row(align=True)
     if operation_in_progress:
         row_right_toplevel.enabled = False
-    row_right_toplevel.alignment = 'RIGHT'
+    row_right_toplevel.alignment = "RIGHT"
     row_right = row_right_toplevel.row()
-    row_right.alignment = 'RIGHT'
+    row_right.alignment = "RIGHT"
 
     if has_remote and (item_remote is not None):
         if pkg_block is not None:
@@ -88,9 +123,41 @@ def extension_draw_item(
                 props.enable_on_install = is_enabled
                 del props
         else:
-            props = row_right.operator("extensions.package_install", text="Install")
-            props.repo_index = repo_index
-            props.pkg_id = pkg_id
+            ### BlenderKit specific code
+            # blenderkit logo icon
+            pcoll = icons.icon_collections["main"]
+            icon_value = pcoll["logo"].icon_id
+            # row.label(text="", icon_value=icon_value)
+            # only enable install for those for whom it's available
+            if bk_cache_pkg is not None:
+                # FUll plan addons, now have [FULL]  in the name
+                if "[FULL]" in item.name:
+                    # open website to subscribe
+                    props = row_right.operator(
+                        "wm.url_open",
+                        text="Subscribe",
+                        icon_value=icon_value,
+                    )
+                    props.url = "https://www.blenderkit.com/plans/pricing/"
+                # Free add-ons
+                elif bk_cache_pkg.get("base_price") == None:
+                    props = row_right.operator(
+                        "extensions.package_install",
+                        text="Install",
+                        icon_value=icon_value,
+                    )
+                    props.repo_index = repo_index
+                    props.pkg_id = pkg_id
+
+                # Paid addons get a buy button and lead to their website link
+                else:
+                    props = row_right.operator(
+                        "wm.url_open",
+                        text=f"Buy ${bk_cache_pkg.get('base_price')}",
+                        icon_value=icon_value,
+                    )
+                    props.url = bk_cache_pkg.get("website")
+            ### end of BlenderKit specific code
             del props
     else:
         # Right space for alignment with the button.
@@ -101,14 +168,16 @@ def extension_draw_item(
         row_right.active = False
 
     row_right = row_right_toplevel.row(align=True)
-    row_right.alignment = 'RIGHT'
+    row_right.alignment = "RIGHT"
     row_right.separator()
 
     # NOTE: Keep space between any buttons and this menu to prevent stray clicks accidentally running install.
     # The separator is around together with the align to give some space while keeping the button and the menu
     # still close-by. Used `extension_path` so the menu can access "this" extension.
-    row_right.context_string_set("extension_path", "{:s}.{:s}".format(repo_item.module, pkg_id))
-    row_right.menu("USERPREF_MT_extensions_item", text="", icon='DOWNARROW_HLT')
+    row_right.context_string_set(
+        "extension_path", "{:s}.{:s}".format(repo_item.module, pkg_id)
+    )
+    row_right.menu("USERPREF_MT_extensions_item", text="", icon="DOWNARROW_HLT")
     del row_right
     del row_right_toplevel
 
@@ -124,7 +193,7 @@ def extension_draw_item(
         # The full tagline may be multiple lines (not yet supported by Blender's UI).
         row.label(text=" {:s}.".format(item.tagline), translate=False)
 
-        col.separator(type='LINE')
+        col.separator(type="LINE")
         del col
 
         col_info = layout.column()
@@ -152,8 +221,8 @@ def extension_draw_item(
             col_a.label(text="Website")
             col_b.split(factor=0.5).operator(
                 "wm.url_open",
-                text=domain_extract_from_url(value),
-                icon='URL',
+                text=exui.domain_extract_from_url(value),
+                icon="URL",
             ).url = value
         del value
 
@@ -163,7 +232,9 @@ def extension_draw_item(
             # As it happens dictionary keys & list values both iterate over string,
             # however we will want to show the dictionary values eventually.
             if value := item.permissions:
-                col_b.label(text=", ".join([iface_(x).title() for x in value]), translate=False)
+                col_b.label(
+                    text=", ".join([iface_(x).title() for x in value]), translate=False
+                )
             else:
                 col_b.label(text="No permissions specified")
             del value
@@ -174,7 +245,9 @@ def extension_draw_item(
         col_a.label(text="Version")
         if is_outdated:
             col_b.label(
-                text=iface_("{:s} ({:s} available)").format(item.version, item_remote.version),
+                text=iface_("{:s} ({:s} available)").format(
+                    item.version, item_remote.version
+                ),
                 translate=False,
             )
         else:
@@ -182,7 +255,9 @@ def extension_draw_item(
 
         if has_remote and (item_remote is not None):
             col_a.label(text="Size")
-            col_b.label(text=size_as_fmt_string(item_remote.archive_size), translate=False)
+            col_b.label(
+                text=exui.size_as_fmt_string(item_remote.archive_size), translate=False
+            )
 
         col_a.label(text="License")
         col_b.label(text=item.license, translate=False)
@@ -193,24 +268,9 @@ def extension_draw_item(
         if is_installed:
             col_a.label(text="Path")
             col_b.label(text=os.path.join(repo_item.directory, pkg_id), translate=False)
-            """
-
-import json
-import os
-import bpy
-import bl_pkg.bl_extension_ui as exui
-from . import icons
-from bl_ui.space_userpref import (
-    USERPREF_PT_addons,
-    USERPREF_PT_extensions,
-    USERPREF_MT_extensions_active_repo,
-)
-from bpy.props import EnumProperty
-
-EXTENSIONS_API_URL = "https://staging.blenderkit.com/api/v1/extensions/"
 
 
-def extension_draw_item_blenderkit(
+def extension_draw_item_override(
     layout,
     *,
     pkg_id,  # `str`
@@ -245,7 +305,26 @@ def extension_draw_item_blenderkit(
                 and not bk_cache_pkg.get("verification_status")
                 == search_verification_status.lower()
             ):
+                layout.scale_y = 0.01
+                layout.enabled = False
+                layout.emboss = "NONE"
+
                 return False
+        extension_draw_item_blenderkit(
+            layout,
+            pkg_id=pkg_id,
+            item_local=item_local,
+            item_remote=item_remote,
+            is_enabled=is_enabled,
+            is_outdated=is_outdated,
+            show=show,
+            mark=mark,
+            repo_index=repo_index,
+            repo_item=repo_item,
+            operation_in_progress=operation_in_progress,
+            extensions_warnings=extensions_warnings,
+        )
+        return True
 
     exui.extension_draw_item_original(
         layout,
@@ -261,31 +340,7 @@ def extension_draw_item_blenderkit(
         operation_in_progress=operation_in_progress,
         extensions_warnings=extensions_warnings,
     )
-    # Folded state:
-    if not repo_item.remote_url == EXTENSIONS_API_URL:
-        return True
 
-    if bk_cache_pkg is None:
-        return True
-
-    row = layout.row()
-
-    if not show:
-        # blenderkit logo icon
-        pcoll = icons.icon_collections["main"]
-        icon_value = pcoll["logo"].icon_id
-        row.label(text="This is folded state", icon_value=icon_value)
-        # verification status
-        row.label(text="Verification status: " + bk_cache_pkg["verification_status"])
-
-    if show:
-        layout.separator()
-        row.label(text="Unfoldeeed state")
-    # link to
-    # print(dir(item_local))
-
-    # which of it could contain original data from api?
-    # archive_size, archive_url, block, license, maintainer, name, permissions, tagline, tags, type, version, website, wheels
     return True
 
 
@@ -295,7 +350,7 @@ def override_draw_function():
         print("already overridden")
         return False
     exui.extension_draw_item_original = exui.extension_draw_item
-    exui.extension_draw_item = extension_draw_item_blenderkit
+    exui.extension_draw_item = extension_draw_item_override
     return True
 
 
