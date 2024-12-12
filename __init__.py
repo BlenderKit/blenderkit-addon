@@ -82,7 +82,8 @@ if "bpy" in locals():
     icons = reload(icons)
     image_utils = reload(image_utils)
     overrides = reload(overrides)
-    override_extension_draw = reload(override_extension_draw)
+    if bpy.app.version >= (4, 2, 0):
+        override_extension_draw = reload(override_extension_draw)
     paths = reload(paths)
     ratings_utils = reload(ratings_utils)
     ratings = reload(ratings)
@@ -112,6 +113,8 @@ if "bpy" in locals():
     # bl_ui_textbox = reload(bl_ui_textbox)
 
 else:
+    import bpy
+
     from . import global_vars, log
 
     log.configure_loggers()
@@ -134,7 +137,9 @@ else:
     from . import icons
     from . import image_utils
     from . import overrides
-    from . import override_extension_draw
+
+    if bpy.app.version >= (4, 2, 0):
+        from . import override_extension_draw
     from . import paths
     from . import ratings
     from . import ratings_utils
@@ -166,7 +171,6 @@ else:
 
 from math import pi
 
-import bpy
 import bpy.utils.previews
 from bl_operators import userpref
 from bpy.app.handlers import persistent
@@ -2544,7 +2548,8 @@ def register():
                     fake_context=False,
                 )
     # extension draw overrides,
-    override_extension_draw.register()
+    if bpy.app.version >= (4, 2, 0):
+        override_extension_draw.register()
 
 
 def unregister():

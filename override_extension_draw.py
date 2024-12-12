@@ -394,9 +394,7 @@ def ensure_repo_cache():
 
 
 def ensure_repo_order():
-    """Ensure that the blenderkit repository is the first one in the list of repositories.
-    We need to cache and delete all other online repositories, and create them new after blenderkit, with all props the same.
-    """
+    """Ensure order of repositories in Blender's preferences."""
     # get the blenderkit repository
     blenderkit_repository = get_repository_by_url(EXTENSIONS_API_URL)
     if blenderkit_repository is None:
