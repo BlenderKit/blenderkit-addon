@@ -153,6 +153,12 @@ def write_tokens(auth_token, refresh_token, oauth_response):
     preferences.login_attempt = False
     preferences.api_key_refresh = refresh_token
     preferences.api_key = auth_token  # triggers api_key update function
+    # write token also to extensions repository setting
+    if bpy.app.version >= (4, 2, 0):
+        from . import override_extension_draw
+
+        override_extension_draw.ensure_repository(api_key=auth_token)
+
     #
 
 

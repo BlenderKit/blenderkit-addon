@@ -2550,6 +2550,7 @@ def register():
     # extension draw overrides,
     if bpy.app.version >= (4, 2, 0):
         override_extension_draw.register()
+        override_extension_draw.ensure_repository(api_key=user_preferences.api_key)
 
 
 def unregister():
@@ -2601,3 +2602,7 @@ def unregister():
     bpy.utils.unregister_class(BlenderKitAddonPreferences)
 
     bpy.app.handlers.load_post.remove(scene_load)
+
+    # extension draw overrides,
+    if bpy.app.version >= (4, 2, 0):
+        override_extension_draw.unregister()

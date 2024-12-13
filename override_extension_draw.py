@@ -1,9 +1,10 @@
-# This is a separate library that overrides the extension_draw_item method from Blender extensions list display.
-# the original code is in the bl_extension_ui.py file in the Blender source code.
-# The override library can be placed in multiple addons, and the override should happen only once.
-# The override is done by replacing the original method with the new one, and backing up the original method.
-# The original method is then called from the new method, with the same arguments, but with the new code added.
-
+"""
+This is a separate library that overrides the extension_draw_item method from Blender extensions list display.
+The original code is in the bl_extension_ui.py file in the Blender source code.
+The override library can be placed in multiple addons, and the override should happen only once.
+The override is done by replacing the original method with the new one, and backing up the original method.
+The original method is then called from the new method, with the same arguments, but with the new code added.
+"""
 
 import json
 import os
@@ -130,17 +131,8 @@ def extension_draw_item_blenderkit(
             # row.label(text="", icon_value=icon_value)
             # only enable install for those for whom it's available
             if bk_cache_pkg is not None:
-                # FUll plan addons, now have [FULL]  in the name
-                if "[FULL]" in item.name:
-                    # open website to subscribe
-                    props = row_right.operator(
-                        "wm.url_open",
-                        text="Subscribe",
-                        icon_value=icon_value,
-                    )
-                    props.url = "https://www.blenderkit.com/plans/pricing/"
-                # Free add-ons
-                elif bk_cache_pkg.get("base_price") == None:
+                # Free , purchased and subscribed add-ons, probably also private add-ons
+                if bk_cache_pkg.get("can_download") is True:
                     props = row_right.operator(
                         "extensions.package_install",
                         text="Install",
@@ -149,11 +141,23 @@ def extension_draw_item_blenderkit(
                     props.repo_index = repo_index
                     props.pkg_id = pkg_id
 
+                # Full plan addons
+                elif not bk_cache_pkg.get("is_free") and not bk_cache_pkg.get(
+                    "is_for_sale"
+                ):
+                    # open website to subscribe
+                    props = row_right.operator(
+                        "wm.url_open",
+                        text="Subscribe to Full Plan",
+                        icon_value=icon_value,
+                    )
+                    props.url = "https://www.blenderkit.com/plans/pricing/"
+
                 # Paid addons get a buy button and lead to their website link
                 else:
                     props = row_right.operator(
                         "wm.url_open",
-                        text=f"Buy ${bk_cache_pkg.get('base_price')}",
+                        text=f"Buy online ${bk_cache_pkg.get('base_price')}",
                         icon_value=icon_value,
                     )
                     props.url = bk_cache_pkg.get("website")
@@ -288,28 +292,6 @@ def extension_draw_item_override(
 ):
     # filter by verification state, only for blenderkit repository
     if repo_item.remote_url == EXTENSIONS_API_URL:
-        # ensure cache is loaded
-        ensure_repo_cache()
-        # get the cache
-        bk_ext_cache = bpy.context.window_manager["blenderkit_extensions_repo_cache"]
-        bk_cache_pkg = bk_ext_cache.get(pkg_id[:32], None)
-        # get the filter setting
-        search_verification_status = (
-            bpy.context.window_manager.blenderkit_extension_validation_settings.search_verification_status
-        )
-        # filter blenderkit packages based on verification status
-
-        if search_verification_status != "ALL":
-            if (
-                bk_cache_pkg is not None
-                and not bk_cache_pkg.get("verification_status")
-                == search_verification_status.lower()
-            ):
-                layout.scale_y = 0.01
-                layout.enabled = False
-                layout.emboss = "NONE"
-
-                return False
         extension_draw_item_blenderkit(
             layout,
             pkg_id=pkg_id,
@@ -345,9 +327,7 @@ def extension_draw_item_override(
 
 
 def override_draw_function():
-    print("overriding extension draw function")
     if hasattr(exui, "extension_draw_item_original"):
-        print("already overridden")
         return False
     exui.extension_draw_item_original = exui.extension_draw_item
     exui.extension_draw_item = extension_draw_item_override
@@ -363,9 +343,10 @@ def get_repository_by_url(url: str):
 
 
 def ensure_repo_cache():
-    # this reads the .json file blender stores in \extensions\www_blenderkit_com\.blender_ext
-    # and parses it to a dict from json, we can use it then for drawing purposes and have the extra data BlenderKit api provides
-
+    """
+    Reads the .json file blender stores in \extensions\www_blenderkit_com\.blender_ext
+    and parses it to a dict from json, we can use it then for drawing purposes and have the extra data BlenderKit api provides
+    """
     # return if cache already exists
     if "blenderkit_extensions_repo_cache" in bpy.context.window_manager:
         return
@@ -480,41 +461,15 @@ def ensure_repository(api_key: str = ""):
     ensure_repo_cache()
 
 
-# small separate preferences prop group on the window manager to store some validator settings
-class BlenderKiExtensionValidationSettings(bpy.types.PropertyGroup):
-    search_verification_status: EnumProperty(
-        name="Verification status",
-        description="Search by verification status",
-        items=(
-            ("ALL", "All", "All"),
-            ("UPLOADING", "Uploading", "Uploading"),
-            ("UPLOADED", "Uploaded", "Uploaded"),
-            ("READY", "Ready for V.", "Ready for validation (deprecated since 2.8)"),
-            ("VALIDATED", "Validated", "Validated"),
-            ("ON_HOLD", "On Hold", "On Hold"),
-            ("REJECTED", "Rejected", "Rejected"),
-            ("DELETED", "Deleted", "Deleted"),
-        ),
-        default="ALL",
-    )
-
-
-def draw_validation_addons(panel, context):
-    layout = panel.layout
-    row = layout.row()
-    # verification  enum as row of buttons
-    row.prop(
-        context.window_manager.blenderkit_extension_validation_settings,
-        "search_verification_status",
-        expand=True,
     )
 
 
 def register():
-    bpy.utils.register_class(BlenderKiExtensionValidationSettings)
-    bpy.types.WindowManager.blenderkit_extension_validation_settings = (
-        bpy.props.PointerProperty(type=BlenderKiExtensionValidationSettings)
-    )
+
     ensure_repository()
     override_draw_function()
-    USERPREF_PT_extensions.prepend(draw_validation_addons)
+
+
+def unregister():
+    exui.extension_draw_item = exui.extension_draw_item_original
+    del exui.extension_draw_item_original
