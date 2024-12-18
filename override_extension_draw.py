@@ -461,9 +461,6 @@ def ensure_repository(api_key: str = ""):
     ensure_repo_cache()
 
 
-    )
-
-
 def register():
 
     ensure_repository()
