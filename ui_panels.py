@@ -936,11 +936,6 @@ class PostComment(bpy.types.Operator):
         name="Reply to Id", description="reply to comment id", default=0
     )
 
-    # flag: bpy.props.StringProperty(
-    #     name="flag",
-    #     description="Like/dislike comment",
-    #     default="like")
-
     @classmethod
     def poll(cls, context):
         return True
@@ -949,6 +944,35 @@ class PostComment(bpy.types.Operator):
         user_preferences = bpy.context.preferences.addons[__package__].preferences
         ui_props = bpy.context.window_manager.blenderkitUI
         api_key = user_preferences.api_key
+
+        # Store comment locally first for immediate display
+        # need to fill in everything to satisfy the drawing of the comment
+        comment_data = {
+            "comment": ui_props.new_comment,
+            "created": "just now",
+            "author": global_vars.BKIT_PROFILE,
+            "id": -1,  # Temporary ID until server response
+            "level": self.comment_id != 0 and 1 or 0,  # If replying, set level 1
+            "parentComment": self.comment_id if self.comment_id != 0 else None,
+            "replies": [],
+            "feedback": {"flags": [], "score": 0},
+            "isPrivate": False,
+            "canChangeIsPrivate": True,
+            "userModerator": False,
+            "isDeleted": False,
+            "flags": [],  # For storing like/dislike flags
+            "asset": self.asset_id,  # Reference to the asset being commented on
+            "canEdit": True,  # User can edit their own new comments
+            "submitDate": "just now",  # Server-generated timestamp
+            "userName": global_vars.BKIT_PROFILE.firstName
+            + " "
+            + global_vars.BKIT_PROFILE.lastName,
+        }
+        comments = comments_utils.get_comments_local(self.asset_id) or []
+        comments.append(comment_data)
+        comments_utils.store_comments_local(self.asset_id, comments)
+
+        # Send to server
         client_lib.create_comment(
             self.asset_id, ui_props.new_comment, api_key, self.comment_id
         )

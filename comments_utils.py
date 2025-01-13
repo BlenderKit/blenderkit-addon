@@ -36,7 +36,7 @@ def handle_get_comments_task(task: client_tasks.Task):
 
 
 def handle_create_comment_task(task: client_tasks.Task):
-    # TODO: refresh comments so the comment is shown asap
+    """Handle incoming task for creating a new comment."""
     if task.status == "finished":
         return bk_logger.debug(f"Creating comment finished - {task.message}")
     if task.status == "error":
